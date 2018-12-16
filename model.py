@@ -107,7 +107,7 @@ class Decoder(nn.Module):
         self.conv = nn.Conv1d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding)
         
         self.mapping = nn.Linear(self.hidden_size, 2*self.hidden_size)
-        self.fc = nn.Linear(self.hidden_size, self.dict_size)
+        self.fc = nn.Linear(self.hidden_size * 2, self.dict_size)
 
         self.softmax = nn.Softmax()
 
