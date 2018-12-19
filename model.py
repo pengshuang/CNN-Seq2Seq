@@ -18,7 +18,7 @@ class Encoder(nn.Module):
         self.embedding_size = opt.embedding_size
         self.hidden_size = opt.hidden_size
 
-        self.in_channels = opt.hidden_size * 2
+        self.in_channels = opt.hidden_size
         self.out_channels = opt.hidden_size * 2
         self.kernel_size = opt.kernel_size
         self.stride = 1
@@ -26,45 +26,45 @@ class Encoder(nn.Module):
         self.layers = opt.enc_layers
 
         self.embedding = nn.Embedding(self.vocab_size, self.embedding_size)
-        self.affine = nn.Linear(self.embedding_size, 2*self.hidden_size)
+        self.affine = nn.Linear(self.embedding_size, self.hidden_size)
         self.softmax = nn.Softmax()
 
         self.conv = nn.Conv1d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding)
 
-        self.mapping = nn.Linear(self.hidden_size, 2 * self.hidden_size)
-        self.bn1 = nn.BatchNorm1d(self.hidden_size)
-        self.bn2 = nn.BatchNorm1d(self.hidden_size * 2)
+        self.mapping = nn.Linear(self.hidden_size / 2, self.hidden_size)
 
     def forward(self, *input):
         # batch, seq_len_src, dim
         inputs = self.embedding(input)
-        # batch, seq_len_src, 2*hidden
+        # batch, seq_len_src, hidden
         outputs = self.affine(inputs)
         # short-cut
+        # batch, seq_len_src, hidden
         _outputs = outputs
         for i in range(self.layers):
-            # batch, 2*hidden, seq_len_src
+            # batch, hidden, seq_len_src
             outputs = outputs.permute(0, 2, 1)
             # batch, 2*hidden, seq_len_src
             outputs = self.conv(outputs)
-            outputs = F.glu(outputs)
-            # batch, seq_len_src, 2*hidden
+            # batch, hidden, seq_len_tgt
+            outputs = F.glu(outputs, dim=1)
+            # batch, seq_len_src, hidden
             outputs = outputs.transpose(1, 2)
-            # A, B: batch, seq_len_src, hidden
-            A, B = outputs.split(self.hidden_size, 2)
-            # A2: batch * seq_len_src, hidden
+            # A, B: batch, seq_len_src, hidden / 2
+            A, B = outputs.split(self.hidden_size / 2, 2)
+            # A2: batch * seq_len_src, hidden / 2
             A2 = A.contiguous().view(-1, A.size(2))
-            # B2: batch * seq_len_src, hidden
+            # B2: batch * seq_len_src, hidden / 2
             B2 = B.contiguous().view(-1, B.size(2))
-            # attn: batch * seq_len_src, hidden
+            # attn: batch * seq_len_src, hidden / 2
             attn = torch.mul(A2, self.softmax(B2))
-            # attn2: batch * seq_len_src, 2 * hidden
+            # attn2: batch * seq_len_src, hidden
             attn2 = self.mapping(attn)
 
-            # outputs: batch, seq_len_src, 2 * hidden
+            # outputs: batch, seq_len_src, hidden
             outputs = attn2.view(A.size(0), A.size(1), -1)
 
-            # batch, seq_len_src, 2 * hidden_size
+            # batch, seq_len_src, hidden_size
             out = attn2.view(A.size(0), A.size(1), -1) + _outputs
             _outputs = out
 
@@ -92,7 +92,7 @@ class Decoder(nn.Module):
         self.embedding_size = opt.embedding_size
         self.hidden_size = opt.hidden_size
 
-        self.in_channels = opt.hidden_size * 2
+        self.in_channels = opt.hidden_size
         self.out_channels = opt.hidden_size * 2
         self.kernel_size = opt.kernel_size
         self.kernel = opt.kernel_size
@@ -101,13 +101,13 @@ class Decoder(nn.Module):
         self.layers = 1
 
         self.embedding = nn.Embedding(self.vocab_size, self.embedding_size)
-        self.affine = nn.Linear(self.embedding_size, 2 * self.hidden_size)
+        self.affine = nn.Linear(self.embedding_size, self.hidden_size)
         self.softmax = nn.Softmax()
 
         self.conv = nn.Conv1d(self.in_channels, self.out_channels, self.kernel_size, self.stride, self.padding)
         
-        self.mapping = nn.Linear(self.hidden_size, 2*self.hidden_size)
-        self.fc = nn.Linear(self.hidden_size * 2, vocab_size)
+        self.mapping = nn.Linear(self.hidden_size / 2, self.hidden_size)
+        self.fc = nn.Linear(self.hidden_size, vocab_size)
 
         self.softmax = nn.Softmax()
 
@@ -115,34 +115,36 @@ class Decoder(nn.Module):
     def forward(self, target, enc_attn, source_seq_out):
         # batch, seq_len_tgt, dim
         inputs = self.embedding(target)
-        # batch, seq_len_tgt, 2*hidden
+        # batch, seq_len_tgt, hidden
         outputs = self.affine(inputs)
 
         for i in range(self.layers):
-            # batch, 2*hidden, seq_len_tgt
+            # batch, hidden, seq_len_tgt
             outputs = outputs.permute(0, 2, 1)
             # batch, 2*hidden, seq_len_tgt
             outputs = self.conv(outputs)
 
             # This is the residual connection,
-            # for the output of the conv will add kernel_size/2 elements 
+            # for the output of the conv will add kernel_size / 2 elements
             # before and after the origin input
             if i > 0:
                 conv_out = conv_out + outputs
 
-            outputs = F.glu(outputs)
+            # batch, hidden, seq_len_tgt
+            outputs = F.glu(outputs, dim=1)
 
-            # batch, seq_len_tgt, 2*hidden
+            # batch, seq_len_tgt, hidden
             outputs = outputs.transpose(1, 2)
-            # A, B: batch, seq_len_tgt, hidden
+            # A, B: batch, seq_len_tgt, hidden / 2
             A, B = outputs.split(self.hidden_size, 2)
-            # A2: batch * seq_len_tgt, hidden
+            # A2: batch * seq_len_tgt, hidden / 2
             A2 = A.contiguous().view(-1, A.size(2))
-            # B2: batch * seq_len_tgt, hidden
+            # B2: batch * seq_len_tgt, hidden / 2
             B2 = B.contiguous().view(-1, B.size(2))
-            # attn: batch * seq_len_tgt, hidden
+            # attn: batch * seq_len_tgt, hidden / 2
             dec_attn = torch.mul(A2, self.softmax(B2))
 
+            # attn: batch * seq_len_tgt, hidden
             dec_attn2 = self.mapping(dec_attn)
             dec_attn2 = dec_attn2.view(A.size(0), A.size(1), -1)
 
@@ -158,12 +160,13 @@ class Decoder(nn.Module):
             # normalized attn_matrix: batch, seq_len_tgt, seq_len_src
             attn_matrix = attn_matrix.view(_attn_matrix.size(0), _attn_matrix.size(1), -1)
 
-            # attns: batch, seq_len_tgt, 2 * hidden_size
+            # attns: batch, seq_len_tgt, hidden_size
             attns = torch.bmm(attn_matrix, source_seq_out)
 
-            # outpus: batch, seq_len_tgt, 2 * hidden_size
+            # outpus: batch, seq_len_tgt, hidden_size
             outputs = dec_attn2 + attns
 
+        # outpus: batch, seq_len_tgt, vocab_size
         outputs = F.log_softmax(self.fc(outputs))
 
         return outputs
@@ -182,10 +185,10 @@ class NMTModel(nn.Module):
     
     def forward(self, source, target):
         # attn: batch, seq_len, hidden
-        # out: batch, seq_len, 2 * hidden_size
+        # out: batch, seq_len, hidden_size
         attn, source_seq_out = self.encoder(source)
 
-        # batch, seq_len_tgt, hidden_size
+        # batch, seq_len_tgt, vocab_size
         out = self.decocer(target, attn, source_seq_out)
 
         return out
