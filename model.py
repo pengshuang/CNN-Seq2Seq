@@ -33,7 +33,7 @@ class Encoder(nn.Module):
 
         self.mapping = nn.Linear(self.hidden_size / 2, self.hidden_size)
 
-    def forward(self, *input):
+    def forward(self, input):
         # batch, seq_len_src, dim
         inputs = self.embedding(input)
         # batch, seq_len_src, hidden
